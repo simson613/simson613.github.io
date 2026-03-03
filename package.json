@@ -54,6 +54,15 @@
     "typescript": "^5.9.3",
     "vitest": "^4.0.18"
   },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,css,mjs}": [
+      "prettier --write"
+    ]
+  },
   "pnpm": {
     "onlyBuiltDependencies": [
       "contentlayer2",
