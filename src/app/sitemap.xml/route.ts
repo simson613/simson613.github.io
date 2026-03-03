@@ -3,6 +3,15 @@ import { SITE_CONFIG } from '@/lib/constants'
 
 export const dynamic = 'force-static'
 
+function escapeXml(str: string): string {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
+}
+
 export function GET() {
   const posts = getAllPosts()
   const categories = getCategories()
@@ -42,8 +51,8 @@ export function GET() {
 ${allUrls
   .map(
     (entry) => `  <url>
-    <loc>${entry.loc}</loc>${
-      'lastmod' in entry ? `\n    <lastmod>${entry.lastmod}</lastmod>` : ''
+    <loc>${escapeXml(entry.loc)}</loc>${
+      'lastmod' in entry ? `\n    <lastmod>${escapeXml(entry.lastmod)}</lastmod>` : ''
     }
   </url>`
   )
