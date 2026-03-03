@@ -1,0 +1,12 @@
+- slug: backend
+  name: Backend
+  description: '서버 개발, API 설계, 데이터베이스'
+- slug: architecture
+  name: Architecture
+  description: '시스템 설계, 패턴, 의사결정'
+- slug: career
+  name: Career
+  description: '커리어, 회고, 성장'
+- slug: devops
+  name: DevOps
+  description: 'CI/CD, 인프라, 배포'
