@@ -30,14 +30,13 @@ export default function SearchInput({ searchIndex }: SearchInputProps) {
         value={query}
         onChange={(e) => setQuery(e.target.value)}
         placeholder="검색어를 입력하세요..."
+        aria-label="검색"
         className="w-full rounded-lg border border-border dark:border-border-dark bg-transparent px-4 py-3 text-sm outline-none focus:border-accent dark:focus:border-accent-dark"
         autoFocus
       />
       {query.length > 1 && (
         <div className="mt-6">
-          <p className="mb-4 text-sm text-muted">
-            {results.length}개의 결과
-          </p>
+          <p className="mb-4 text-sm text-muted">{results.length}개의 결과</p>
           <div className="space-y-4">
             {results.map(({ item }) => (
               <Link

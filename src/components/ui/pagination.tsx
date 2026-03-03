@@ -25,6 +25,7 @@ export default function Pagination({ currentPage, totalPages, basePath }: Pagina
         <Link
           key={page}
           href={page === 1 ? basePath : `${basePath}/p/${page}`}
+          aria-current={page === currentPage ? 'page' : undefined}
           className={`rounded-md border px-3 py-1 text-sm ${
             page === currentPage
               ? 'border-accent bg-accent text-white'
