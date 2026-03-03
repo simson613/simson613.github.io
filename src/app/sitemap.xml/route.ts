@@ -52,7 +52,7 @@ ${allUrls
   .map(
     (entry) => `  <url>
     <loc>${escapeXml(entry.loc)}</loc>${
-      'lastmod' in entry ? `\n    <lastmod>${escapeXml(entry.lastmod)}</lastmod>` : ''
+      'lastmod' in entry ? `\n    <lastmod>${escapeXml((entry as { lastmod: string }).lastmod)}</lastmod>` : ''
     }
   </url>`
   )
