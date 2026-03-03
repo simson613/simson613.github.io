@@ -61,16 +61,34 @@ export function getAllTags(): Tag[] {
     .sort((a, b) => b.count - a.count)
 }
 
+function loadYamlArray<T extends Record<string, unknown>>(
+  filename: string,
+  requiredKeys: (keyof T)[]
+): T[] {
+  const filePath = path.join(process.cwd(), 'content', filename)
+  try {
+    const raw = fs.readFileSync(filePath, 'utf-8')
+    const data = yaml.load(raw)
+    if (!Array.isArray(data)) {
+      console.error(`[content] ${filename}: expected array, got ${typeof data}`)
+      return []
+    }
+    return data.filter((item): item is T => {
+      if (typeof item !== 'object' || item === null) return false
+      return requiredKeys.every((key) => key in item)
+    })
+  } catch (error) {
+    console.error(`[content] failed to load ${filename}:`, error)
+    return []
+  }
+}
+
 export function getCategories(): Category[] {
-  const filePath = path.join(process.cwd(), 'content', 'categories.yaml')
-  const raw = fs.readFileSync(filePath, 'utf-8')
-  return yaml.load(raw) as Category[]
+  return loadYamlArray<Category>('categories.yaml', ['slug', 'name', 'description'])
 }
 
 export function getSeriesList(): Series[] {
-  const filePath = path.join(process.cwd(), 'content', 'series.yaml')
-  const raw = fs.readFileSync(filePath, 'utf-8')
-  return yaml.load(raw) as Series[]
+  return loadYamlArray<Series>('series.yaml', ['slug', 'title', 'description'])
 }
 
 export interface SearchIndexEntry {
