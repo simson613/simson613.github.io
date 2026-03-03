@@ -2,6 +2,11 @@
 @plugin '@tailwindcss/typography';
 
 @theme {
+  --font-pretendard:
+    'Pretendard Variable', Pretendard, -apple-system, BlinkMacSystemFont, system-ui, Roboto,
+    'Helvetica Neue', 'Segoe UI', 'Apple SD Gothic Neo', 'Noto Sans KR', 'Malgun Gothic',
+    'Apple Color Emoji', 'Segoe UI Emoji', 'Segoe UI Symbol', sans-serif;
+
   --color-bg: #ffffff;
   --color-bg-dark: #0a0a0a;
   --color-text: #171717;
@@ -20,6 +25,7 @@
 
 .prose code {
   @apply rounded px-1 py-0.5 text-sm;
+  font-family: var(--font-mono), ui-monospace, SFMono-Regular, monospace;
 }
 
 .prose pre code {
