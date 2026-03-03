@@ -61,10 +61,7 @@ export function getAllTags(): Tag[] {
     .sort((a, b) => b.count - a.count)
 }
 
-function loadYamlArray<T extends Record<string, unknown>>(
-  filename: string,
-  requiredKeys: (keyof T)[]
-): T[] {
+function loadYamlArray<T>(filename: string, requiredKeys: string[]): T[] {
   const filePath = path.join(process.cwd(), 'content', filename)
   try {
     const raw = fs.readFileSync(filePath, 'utf-8')
@@ -75,7 +72,8 @@ function loadYamlArray<T extends Record<string, unknown>>(
     }
     return data.filter((item): item is T => {
       if (typeof item !== 'object' || item === null) return false
-      return requiredKeys.every((key) => key in item)
+      const record = item as Record<string, unknown>
+      return requiredKeys.every((key) => key in record)
     })
   } catch (error) {
     console.error(`[content] failed to load ${filename}:`, error)
