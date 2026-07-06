@@ -1,3 +1,6 @@
 - slug: payment-refactoring
   title: '결제 시스템 리팩토링'
   description: '레거시 결제 시스템을 단계적으로 개선하는 과정을 기록합니다'
+- slug: ai-native-dev
+  title: 'AI 네이티브 개발자'
+  description: '작성자에서 오케스트레이터로 — AI 네이티브 개발 역량 시리즈'

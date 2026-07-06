@@ -10,3 +10,6 @@
 - slug: devops
   name: DevOps
   description: 'CI/CD, 인프라, 배포'
+- slug: ai
+  name: AI
+  description: 'LLM, 에이전트, AI 네이티브 개발'

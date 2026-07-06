@@ -1,0 +1,212 @@
+---
+title: '백엔드 관점의 RAG와 벡터 DB 파이프라인'
+date: '2026-07-06T14:00:00+09:00'
+summary: 'pgvector, 하이브리드 검색, 청킹 전략을 실제 서비스에 얹기'
+category: ai
+tags: [ai, rag, vector db, pgvector, embedding]
+series: ai-native-dev
+seriesOrder: 4
+published: true
+---
+
+
+## 들어가며
+
+RAG(Retrieval-Augmented Generation)는 한동안 "AI에 우리 데이터를 붙이는 기본기"처럼 여겨졌습니다. 지금은 위상이 조금 달라졌습니다. 컨텍스트 윈도우가 길어지고 에이전트가 스스로 필요한 문서를 찾아 읽는 패턴이 자리 잡으면서, RAG는 만능 디폴트가 아니라 여러 검색 전략 중 하나가 됐습니다.
+
+그래도 문서 검색, 사내 위키 봇, 고객 지원 AI, 코드 어시스턴트까지 상당수 서비스는 여전히 임베딩과 벡터 검색을 어딘가에 두고 있습니다. 문제는 이걸 프로토타입에서 프로덕션으로 옮기는 순간 백엔드 관점의 결정이 잔뜩 튀어나온다는 점입니다.
+
+어느 DB를 쓸지, 인덱스는 어떻게 걸지, 청킹은 얼마 크기로 자를지, 검색이 이상할 때 무엇을 봐야 할지. 이 글은 개발자로서 팀에 RAG를 얹으면서 정리한 판단 기준입니다.
+
+## 임베딩 차원과 저장 비용
+
+임베딩은 텍스트를 고정 길이 벡터로 바꿉니다.
+
+`text-embedding-3-small`은 1536차원, `text-embedding-3-large`는 3072차원, 오픈소스로 자주 쓰는 `bge-m3`은 1024차원입니다. 차원이 높으면 표현력이 좋지만 저장 비용과 검색 지연이 함께 올라갑니다. 참고로 여기 든 모델은 예시일 뿐이고, 임베딩 모델 지형은 빠르게 바뀝니다. 실제 선택 전에는 MTEB 같은 최신 벤치마크로 자기 도메인과 언어에 맞는 모델을 확인하는 편이 좋습니다.
+
+숫자로 감을 잡아보겠습니다. `float32` 기준 1536차원 벡터 하나가 약 6KB입니다. 문서 100만 개면 6GB, 여기에 인덱스 오버헤드까지 붙습니다. 3072차원으로 가면 12GB에 더해 인덱스 크기도 두 배로 늘어납니다.
+
+그래서 실제로는 다음 두 가지를 자주 고려합니다. 첫째, 차원을 줄이는 옵션(예: OpenAI의 `dimensions` 파라미터로 512차원으로 자르기)을 씁니다. 둘째, `float32`가 아니라 `float16`이나 정수 양자화된 벡터로 저장합니다.
+
+정확도가 살짝 떨어지지만 실서비스에서 recall 손실이 미미한 경우가 많고, 비용과 지연은 크게 줄어듭니다.
+
+## pgvector, Pinecone, Qdrant 중 무엇을 쓰나
+
+여기서 백엔드 개발자가 자주 던지는 질문이 있습니다.
+
+"왜 굳이 별도 벡터 DB를 붙이나. 이미 있는 Postgres에 pgvector로 얹으면 안 되나."
+
+제 기준은 이렇습니다.
+
+문서 수 1천만 미만, QPS 수백 이하, 팀에 Postgres 운영 경험이 있다면 pgvector가 답입니다. 트랜잭션 안에서 문서 메타데이터와 벡터를 함께 관리할 수 있고, 기존 백업/모니터링 체계를 그대로 씁니다.
+
+문서 수가 수천만을 넘거나, 필터가 복잡하거나(수십 개 태그 조합), 초당 수천 쿼리를 감당해야 한다면 Qdrant나 Milvus 같은 전용 엔진이 유리합니다. 페이로드 인덱싱과 필터링 조합이 pgvector보다 빠릅니다.
+
+Pinecone은 완전 관리형이라 인프라 부담이 없지만 비용이 비교적 비싸고 벤더 락인이 있습니다. 스타트업 초기에는 시간이 곧 돈이라 좋은 선택이지만, 규모가 커지면 self-host로 갈아타는 팀도 많습니다.
+
+저는 대부분의 사내 프로젝트는 pgvector로 시작합니다. 익숙한 DB에서 시작하는 것이 실패 비용이 가장 낮기 때문입니다.
+
+## pgvector로 인덱스 만들기
+
+pgvector에서 유사도 검색을 하려면 인덱스가 필요합니다.
+
+```sql
+CREATE EXTENSION IF NOT EXISTS vector;
+
+CREATE TABLE documents (
+    id BIGINT PRIMARY KEY GENERATED ALWAYS AS IDENTITY,
+    doc_id TEXT NOT NULL,
+    chunk_idx INT NOT NULL,
+    content TEXT NOT NULL,
+    embedding VECTOR(1024) NOT NULL,
+    metadata JSONB NOT NULL DEFAULT '{}'::jsonb,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX documents_embedding_hnsw
+ON documents
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+```
+
+인덱스 없이는 매 쿼리마다 전체 테이블을 스캔합니다. 문서가 10만 개만 넘어가도 지연이 눈에 띕니다.
+
+쿼리는 다음처럼 씁니다.
+
+```sql
+SELECT id, doc_id, content, 1 - (embedding <=> $1) AS similarity
+FROM documents
+WHERE metadata->>'source' = 'wiki'
+ORDER BY embedding <=> $1
+LIMIT 20;
+```
+
+`<=>`는 cosine distance 연산자입니다. `1 -` 로 감싸서 similarity로 뒤집어 보는 게 사람 눈에 편합니다.
+
+## HNSW vs IVFFlat
+
+pgvector가 지원하는 두 가지 ANN 인덱스에는 뚜렷한 트레이드오프가 있습니다.
+
+HNSW는 그래프 기반 인덱스입니다. 검색 품질이 높고, 지연이 안정적이고, 삽입 시점에 점진적으로 인덱스가 자랍니다. 대신 인덱스 크기가 크고 빌드 시간이 깁니다. 실시간 삽입이 잦은 서비스에 적합합니다.
+
+IVFFlat은 벡터 공간을 여러 클러스터로 나눠 두는 방식입니다. 빌드가 빠르고 인덱스가 작지만, 초기 학습에 이미 데이터가 어느 정도 쌓여 있어야 합니다. 신규 삽입이 몰리면 클러스터가 편향되어 recall이 떨어지므로 주기적인 재빌드가 필요합니다.
+
+파라미터도 다릅니다.
+
+HNSW에서 `m`은 그래프 노드 하나당 이웃 수(보통 16), `ef_construction`은 빌드 시 탐색 폭(보통 64), 검색 시 `ef_search`(보통 40 근처)로 recall과 지연을 조절합니다.
+
+IVFFlat에서 `lists`는 클러스터 수인데, 문서 수의 제곱근 근처가 경험적 기본값입니다. `probes`는 검색 시 몇 개 클러스터를 볼지 정합니다. probes를 늘리면 recall은 올라가지만 지연도 커집니다.
+
+대부분의 프로덕션은 HNSW로 시작하는 편이 안전합니다. 삽입/삭제가 잦고, 파라미터 튜닝 없이도 결과가 안정적입니다.
+
+## 청킹 전략이 리트리벌 품질을 좌우한다
+
+경험상 RAG 품질의 가장 큰 변수는 임베딩 모델이 아니라 청킹입니다.
+
+문서를 너무 작게 자르면 맥락이 사라져서 검색 결과가 파편적입니다. 너무 크게 자르면 하나의 청크에 여러 주제가 섞여 임베딩이 흐려집니다.
+
+일반적인 시작점은 다음과 같습니다.
+
+- 텍스트 문서: 500~800 토큰, 100 토큰 오버랩
+- 코드: 함수/클래스 단위로 자르기, AST 기반 분할
+- FAQ/QA: 질문-답변 쌍을 하나의 청크로 유지
+- 표 데이터: 표를 문장 형태로 변환한 뒤 행 단위로 청크
+
+오버랩은 청크 경계에서 맥락이 잘리는 문제를 완화하지만, 저장 비용과 중복 결과를 늘립니다. 검색 결과 후처리에서 인접 청크를 dedup 하는 로직을 함께 짜두는 편이 좋습니다.
+
+다만 위 숫자를 고정 규칙으로 못 박을 필요는 없습니다. 500\~800 토큰은 컨텍스트 창이 짧아 청크를 잘게 쪼개 욱여넣던 시절에 굳어진 값에 가깝습니다. 모델 창이 길어진 지금은 더 큰 청크(1500\~2000 토큰)로 맥락을 살리거나, 고정 크기 대신 문단·섹션 같은 의미 경계로 자르는 방식이 유리한 경우가 많습니다. 청크 크기는 검색 전략과 쓰는 모델의 창 크기에 맞춰 정하는 값이지, 하나로 고정된 상수가 아닙니다.
+
+Python으로 대략의 파이프라인을 스케치하면 이렇습니다.
+
+```python
+def embed_and_store(doc_id: str, text: str):
+    chunks = split_text(text, chunk_size=700, overlap=100)
+    vectors = embed_batch([c.content for c in chunks])
+    rows = [
+        {
+            "doc_id": doc_id,
+            "chunk_idx": i,
+            "content": c.content,
+            "embedding": v,
+            "metadata": c.metadata,
+        }
+        for i, (c, v) in enumerate(zip(chunks, vectors))
+    ]
+    db.bulk_insert("documents", rows)
+```
+
+임베딩 호출은 반드시 배치로 묶어야 합니다. 청크 하나씩 호출하면 요금과 지연이 모두 폭발합니다.
+
+## 하이브리드 검색 - BM25와 벡터의 합주
+
+벡터 검색만으로는 부족한 순간이 자주 옵니다. 뒤에 설명할 하이브리드 검색은 그래서 예외적인 고급 기법이라기보다, 프로덕션에서는 기본으로 깔고 가는 구성에 가깝습니다.
+
+특히 고유명사, 오타가 없는 정확한 키워드, 코드 심볼처럼 "정확 일치"가 중요한 질의에서는 벡터가 오히려 흐릿한 결과를 냅니다. "OAuth 2.1의 PKCE 규격"을 물었는데 "PKCE"라는 정확한 단어가 없는 청크가 상위에 뜨는 식입니다.
+
+BM25 같은 키워드 검색과 벡터 검색을 함께 쓰는 것을 하이브리드 검색이라고 부릅니다. Postgres에서는 다음처럼 조합할 수 있습니다.
+
+```sql
+WITH bm25 AS (
+    SELECT id, ts_rank_cd(tsv, plainto_tsquery('english', $2)) AS score
+    FROM documents
+    WHERE tsv @@ plainto_tsquery('english', $2)
+    ORDER BY score DESC
+    LIMIT 100
+),
+vec AS (
+    SELECT id, 1 - (embedding <=> $1) AS score
+    FROM documents
+    ORDER BY embedding <=> $1
+    LIMIT 100
+)
+SELECT d.id, d.content,
+       COALESCE(bm25.score, 0) * 0.4 + COALESCE(vec.score, 0) * 0.6 AS score
+FROM documents d
+LEFT JOIN bm25 ON bm25.id = d.id
+LEFT JOIN vec ON vec.id = d.id
+WHERE bm25.id IS NOT NULL OR vec.id IS NOT NULL
+ORDER BY score DESC
+LIMIT 20;
+```
+
+가중치는 데이터에 따라 다릅니다. 순위를 정규화하기 어렵다면 Reciprocal Rank Fusion(RRF) 방식을 쓰는 편이 안전합니다. 각 리스트에서 랭크의 역수를 더해 재정렬합니다.
+
+경험상 벡터 단일 검색보다 하이브리드가 recall을 10~30% 끌어올립니다. 특히 도메인 특화 어휘가 많은 코퍼스에서 효과가 큽니다.
+
+한 가지 더. 요즘 프로덕션 검색은 여기서 한 단계를 더 둡니다. 하이브리드로 후보를 넓게(예: 100개) 뽑은 뒤, 리랭커(cross-encoder)로 상위 몇 개를 다시 정렬하는 2단계 구성입니다. 벡터/BM25는 recall(정답을 후보 안에 넣기)을 맡고, 리랭커는 precision(그중 진짜 상위를 가리기)을 맡는 역할 분담입니다. 리랭커는 질의와 문서를 함께 넣고 점수를 매기기 때문에 bi-encoder 임베딩보다 느리지만 순위 품질이 확연히 좋습니다. 이제는 고급 기법이라기보다 기본 레이어에 가까워서, recall이 애매할 때 HNSW 파라미터부터 만지기 전에 리랭커를 먼저 얹어보는 편이 빠를 때가 많습니다.
+
+## recall이 낮을 때 무엇을 볼까
+
+RAG를 붙였는데 답이 이상하다는 리포트가 들어오면 어디서부터 볼까요.
+
+저는 다음 순서로 확인합니다.
+
+첫째, 정답 문서가 애초에 인덱스에 들어가 있는지 확인합니다. 청킹에서 잘려나갔거나, 임베딩 파이프라인이 실패한 채로 넘어간 경우가 놀랄 만큼 많습니다.
+
+둘째, 정답 청크의 raw text와 사용자의 질의를 나란히 두고 사람 눈으로 봅니다. 두 텍스트가 정말 의미상 가까운지, 아니면 사람의 언어와 문서의 언어가 다른지 확인합니다. 다르다면 쿼리 재작성(query rewriting)이나 HyDE 같은 기법을 고려합니다.
+
+셋째, top-k를 늘려 봅니다. k=5에서 안 나오던 정답이 k=50에서 나온다면 검색은 되는데 랭킹이 문제입니다. 이때는 리랭커(cross-encoder)를 붙이면 크게 개선됩니다.
+
+넷째, 인덱스 파라미터를 봅니다. HNSW의 `ef_search`를 올리거나 IVFFlat의 `probes`를 늘려서 recall이 회복되는지 확인합니다. 여기서 회복된다면 지연을 감수하고 파라미터를 올리는 게 답입니다.
+
+## 품질 측정을 위한 지표 세팅
+
+recall이 낮다는 감이 있어도 숫자가 없으면 개선을 증명하기 어렵습니다.
+
+작은 평가셋을 만들어 두는 것이 필수입니다. 도메인 전문가와 함께 50~200개 정도의 (질의, 정답 문서) 쌍을 만들고, 다음 지표를 정기적으로 측정합니다.
+
+- Recall@k: top-k에 정답 문서가 들어 있는 비율
+- MRR(Mean Reciprocal Rank): 정답의 랭크 역수 평균
+- nDCG: 다수 정답이 있는 경우의 랭킹 품질
+
+리트리벌 품질과 생성 품질은 분리해서 봐야 합니다. LLM이 최종적으로 좋은 답을 만들었더라도 리트리벌이 형편없으면 언젠가 무너집니다. 반대로 리트리벌은 훌륭한데 생성이 이상하다면 프롬프트나 컨텍스트 조립 로직 문제입니다.
+
+## 마무리
+
+RAG는 화려한 AI 기술처럼 보이지만 실체는 익숙한 검색 파이프라인입니다.
+
+데이터를 어떻게 자를지, 인덱스는 어떤 트레이드오프를 가질지, 정확 일치와 의미 검색을 어떻게 섞을지, 품질을 어떻게 측정할지. 백엔드 개발자가 오래 다뤄온 문제 그대로입니다.
+
+새 도구를 무작정 도입하기 전에 기존 스택으로 얼마나 갈 수 있는지 먼저 보는 것을 권합니다. Postgres + pgvector + BM25 조합만으로도 상당한 규모까지 충분히 굴러갑니다.
+
+전용 벡터 DB로 옮기는 시점은 트래픽이나 필터 복잡도가 확실히 병목이 됐을 때입니다. 그때가 오기 전에는 익숙한 도구로 실험을 빠르게 돌리는 편이 결과가 더 좋습니다.
