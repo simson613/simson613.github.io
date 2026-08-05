@@ -13,3 +13,6 @@
 - slug: ai
   name: AI
   description: 'LLM, 에이전트, AI 네이티브 개발'
+- slug: cs
+  name: CS
+  description: '운영체제, 동시성, 컴퓨터 과학 기초'
